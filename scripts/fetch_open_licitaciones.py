@@ -4,14 +4,16 @@ ChileCompra y las almacena en Supabase (tabla licitaciones_abiertas).
 
 Para cada licitación:
   1. Llama al endpoint de lista (estado=publicada) para obtener el inventario
-  2. Llama al endpoint de detalle por código para obtener los ítems con ONU codes
-  3. Upserta en licitaciones_abiertas con todos los campos necesarios para el scoring
+  2. (Opcional) Pre-filtra por keywords en el nombre antes de llamar detalle
+  3. Llama al endpoint de detalle por código para obtener los ítems con ONU codes
+  4. Upserta en licitaciones_abiertas con todos los campos necesarios para el scoring
 
 Uso:
     python3 scripts/fetch_open_licitaciones.py
     python3 scripts/fetch_open_licitaciones.py --pages 5      # primeras 5000 licitaciones
     python3 scripts/fetch_open_licitaciones.py --force        # re-fetcha las ya procesadas
     python3 scripts/fetch_open_licitaciones.py --pages 2 --delay 0.5
+    python3 scripts/fetch_open_licitaciones.py --keywords     # pre-filtra por nombre (mucho más rápido)
 """
 
 import argparse
@@ -44,6 +46,18 @@ BASE_URL = "https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json
 BATCH_SIZE = 200
 DEFAULT_PAGES = 3        # 3000 licitaciones en primera corrida
 DEFAULT_DELAY = 0.35     # segundos entre llamadas a la API
+
+# Palabras clave para pre-filtrar por nombre de licitación (rubro médico/salud)
+# Permite un primer filtrado rápido sin llamar el endpoint de detalle.
+KEYWORDS_SALUD = [
+    "medic", "salud", "hospital", "clinic", "farmac", "farmác",
+    "insumo", "quirur", "ortop", "prótesis", "protesi", "dental",
+    "sanitari", "equipo médic", "material médic", "dispositiv",
+    "laboratori", "diagnóst", "tratamiento", "rehabilit",
+    "oxígeno", "oxigeno", "ambulanci", "urgenci", "enferm",
+    "instrumental", "implante", "catéter", "cateter", "jeringa",
+    "sonda", "guante", "mascarill", "apósito", "venda",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +225,9 @@ def main():
                         help="Re-fetcha licitaciones ya procesadas hoy")
     parser.add_argument("--solo-unspsc42", action="store_true",
                         help="Solo guarda licitaciones con al menos 1 ítem UNSPSC 42")
+    parser.add_argument("--keywords", action="store_true",
+                        help="Pre-filtra por nombre antes de llamar detalle (mucho más rápido, "
+                             "puede perder licitaciones con nombres poco descriptivos)")
     args = parser.parse_args()
 
     load_dotenv()
@@ -254,6 +271,12 @@ def main():
                 continue
 
             total_fetched += 1
+
+            # Pre-filtro por keywords en nombre (evita calls de detalle innecesarios)
+            if args.keywords:
+                nombre_lower = (lic.get("Nombre") or "").lower()
+                if not any(kw in nombre_lower for kw in KEYWORDS_SALUD):
+                    continue
 
             # Idempotencia: saltar si ya fue procesada hoy
             if not args.force and already_fetched_today(supabase, codigo):
