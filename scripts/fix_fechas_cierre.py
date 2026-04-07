@@ -1,19 +1,21 @@
 """
-fix_fechas_cierre.py — Corrige fecha_cierre NULL en licitaciones_abiertas
-usando el endpoint de LISTADO de la API (no el de detalle).
+fix_fechas_cierre.py — Corrige fecha_cierre NULL en licitaciones_abiertas.
 
-Estrategia eficiente:
-  1. Carga todos los codigo_licitacion con fecha_cierre IS NULL desde Supabase
-  2. Llama al endpoint de LISTADO (1 call por página, 1000 licitaciones por página)
-  3. Extrae FechaCierre de la respuesta del listado
-  4. Actualiza solo los registros con fecha_cierre NULL que aparecen en el listado
+Estrategia: endpoint de DETALLE por código (no el de listado).
+El detalle funciona para cualquier licitación sin importar su estado (abierta/cerrada).
 
-Esto tarda ~10 segundos (3-5 llamadas API) vs ~3 horas con --force completo.
+Flujo:
+  1. Lee todos los codigo_licitacion con fecha_cierre IS NULL desde Supabase
+  2. Llama al endpoint de detalle una vez por código
+  3. Extrae FechaCierre y actualiza el registro
+
+Tiempo estimado: ~2 min para 359 códigos (0.35s de delay entre calls).
 
 Uso:
     python3 scripts/fix_fechas_cierre.py
-    python3 scripts/fix_fechas_cierre.py --pages 5   # buscar en más páginas
-    python3 scripts/fix_fechas_cierre.py --dry-run   # sin escribir a DB
+    python3 scripts/fix_fechas_cierre.py --delay 0.5    # más lento si la API da errores
+    python3 scripts/fix_fechas_cierre.py --dry-run      # sin escribir a DB
+    python3 scripts/fix_fechas_cierre.py --batch 50     # detener tras N actualizaciones
 """
 
 import argparse
@@ -37,9 +39,8 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-BASE_URL = "https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json"
-DEFAULT_PAGES = 5
-DELAY = 0.5   # segundos entre páginas (el listado es menos restrictivo)
+BASE_URL  = "https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json"
+DEFAULT_DELAY = 0.35
 
 
 # ---------------------------------------------------------------------------
@@ -63,25 +64,31 @@ def parse_date(s: Optional[str]) -> Optional[str]:
     return None
 
 
-def fetch_page(session: requests.Session, ticket: str, page: int) -> Optional[dict]:
-    """Trae una página del listado de licitaciones publicadas."""
-    params = {"estado": "publicada", "pagina": page, "ticket": ticket}
-    for attempt in range(1, 4):
+def fetch_detail(
+    session: requests.Session,
+    ticket: str,
+    codigo: str,
+    delay: float,
+    retries: int = 4,
+) -> Optional[dict]:
+    """Llama al endpoint de detalle para un código específico."""
+    params = {"codigo": codigo, "ticket": ticket}
+    for attempt in range(1, retries + 1):
         try:
             r = session.get(BASE_URL, params=params, timeout=30)
             r.raise_for_status()
             data = r.json()
             if isinstance(data, dict) and data.get("Codigo") == 10500:
-                wait = min(DELAY * (2 ** attempt), 30)
+                wait = min(delay * (2 ** attempt), 60)
                 log.warning(f"  API saturada. Esperando {wait:.1f}s...")
                 time.sleep(wait)
                 continue
             return data
         except Exception as e:
-            if attempt == 3:
-                log.error(f"  Fallo en página {page}: {e}")
+            if attempt == retries:
+                log.warning(f"  Fallo en {codigo}: {e}")
                 return None
-            time.sleep(DELAY * attempt)
+            time.sleep(delay * attempt)
     return None
 
 
@@ -91,12 +98,14 @@ def fetch_page(session: requests.Session, ticket: str, page: int) -> Optional[di
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Corrige fecha_cierre NULL en licitaciones_abiertas (rápido)"
+        description="Corrige fecha_cierre NULL en licitaciones_abiertas vía endpoint de detalle"
     )
-    parser.add_argument("--pages", type=int, default=DEFAULT_PAGES,
-                        help=f"Páginas de listado a consultar (default: {DEFAULT_PAGES})")
+    parser.add_argument("--delay", type=float, default=DEFAULT_DELAY,
+                        help=f"Segundos entre calls API (default: {DEFAULT_DELAY})")
+    parser.add_argument("--batch", type=int, default=None,
+                        help="Detener tras N actualizaciones (útil para tests)")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Solo muestra qué se actualizaría, sin escribir a DB")
+                        help="Solo muestra qué haría, sin escribir a DB")
     args = parser.parse_args()
 
     load_dotenv()
@@ -130,65 +139,50 @@ def main():
         log.info("✅ No hay licitaciones con fecha_cierre NULL. Nada que corregir.")
         return
 
-    null_codigos = {row["codigo_licitacion"] for row in null_rows}
-    log.info(f"  {len(null_codigos)} licitaciones con fecha_cierre NULL")
+    codigos = [row["codigo_licitacion"] for row in null_rows]
+    total   = len(codigos)
+    log.info(f"  {total} licitaciones con fecha_cierre NULL")
+    log.info(f"  Tiempo estimado: ~{total * args.delay / 60:.1f} min a {args.delay}s por call\n")
 
-    # 2. Consultar páginas del listado para encontrar las fechas
+    # 2. Llamar endpoint de detalle por cada código
     session = requests.Session()
-    session.headers.update({"User-Agent": "BidEngine/1.0 fix_fechas"})
+    session.headers.update({"User-Agent": "BidEngine/1.0 fix_fechas", "Connection": "close"})
 
-    updates = {}  # codigo → fecha_cierre ISO
+    ok = 0
+    sin_fecha = 0
+    errores = 0
+    limit = args.batch or total
 
-    for page in range(1, args.pages + 1):
-        log.info(f"  [Página {page}/{args.pages}] Consultando listado...")
-        data = fetch_page(session, ticket, page)
-        if not data:
+    for i, codigo in enumerate(codigos, 1):
+        if ok >= limit:
+            log.info(f"  Límite --batch {limit} alcanzado. Deteniendo.")
             break
+
+        if i % 25 == 0 or i == 1:
+            log.info(f"  [{i}/{total}] Procesando... ({ok} actualizados, {sin_fecha} sin fecha)")
+
+        time.sleep(args.delay)
+        data = fetch_detail(session, ticket, codigo, args.delay)
+
+        if not data:
+            errores += 1
+            continue
 
         listado = data.get("Listado") or []
         if not listado:
-            log.info(f"  Página {page} vacía.")
-            break
+            sin_fecha += 1
+            continue
 
-        for item in listado:
-            codigo = item.get("CodigoExterno")
-            if codigo and codigo in null_codigos:
-                fecha = parse_date(item.get("FechaCierre"))
-                if fecha:
-                    updates[codigo] = fecha
+        fecha = parse_date(listado[0].get("FechaCierre"))
+        if not fecha:
+            sin_fecha += 1
+            continue
 
-        log.info(f"  Matches encontrados hasta ahora: {len(updates)}/{len(null_codigos)}")
+        if args.dry_run:
+            print(f"  [DRY-RUN] {codigo} → {fecha}")
+            ok += 1
+            continue
 
-        # Si ya encontramos todos, parar antes
-        if len(updates) >= len(null_codigos):
-            log.info("  Todos los NULL resueltos. Deteniendo búsqueda anticipada.")
-            break
-
-        time.sleep(DELAY)
-
-    if not updates:
-        log.warning(
-            f"No se encontró ninguna fecha para los {len(null_codigos)} códigos. "
-            f"Puede que las licitaciones ya estén cerradas (no aparecen en 'publicada'). "
-            f"Prueba con --pages 10 o corre fetch_open_licitaciones.py --force."
-        )
-        return
-
-    log.info(f"\n  {len(updates)} fechas encontradas de {len(null_codigos)} NULL")
-
-    if args.dry_run:
-        print(f"\n[DRY-RUN] Se actualizarían {len(updates)} registros:")
-        for cod, fecha in list(updates.items())[:20]:
-            print(f"  {cod} → {fecha}")
-        if len(updates) > 20:
-            print(f"  ... y {len(updates) - 20} más")
-        return
-
-    # 3. Actualizar en Supabase (UPDATE individual por codigo)
-    log.info("Actualizando fecha_cierre en Supabase...")
-    ok = 0
-    errors = 0
-    for codigo, fecha in updates.items():
         try:
             supabase.table("licitaciones_abiertas").update(
                 {"fecha_cierre": fecha}
@@ -196,19 +190,22 @@ def main():
             ok += 1
         except Exception as e:
             log.error(f"  ❌ Error actualizando {codigo}: {e}")
-            errors += 1
+            errores += 1
 
-    still_null = len(null_codigos) - len(updates)
-    log.info(f"\n✅ Actualizados : {ok}")
-    if errors:
-        log.warning(f"  Errores       : {errors}")
-    if still_null:
-        log.warning(
-            f"  Sin resolver  : {still_null} licitaciones "
-            f"(probablemente ya cerradas y no aparecen en el listado 'publicada')"
-        )
-
-    log.info("=== fix_fechas_cierre finalizado ===")
+    # 3. Resumen
+    print(f"\n{'═'*60}")
+    print(f"  fix_fechas_cierre — RESUMEN")
+    print(f"{'═'*60}")
+    print(f"  Códigos procesados : {min(i, total)}/{total}")
+    print(f"  ✅ Actualizados    : {ok}")
+    print(f"  ⚠  Sin FechaCierre : {sin_fecha}  (licitación sin fecha en API)")
+    if errores:
+        print(f"  ❌ Errores DB      : {errores}")
+    if sin_fecha > 0:
+        print(f"\n  Nota: {sin_fecha} licitaciones no tienen FechaCierre en la API.")
+        print(f"  Probablemente son licitaciones sin plazo definido (trato directo,")
+        print(f"  convenio marco, etc.). Es esperable.")
+    print(f"{'═'*60}\n")
 
 
 if __name__ == "__main__":
