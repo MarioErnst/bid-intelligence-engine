@@ -1,5 +1,15 @@
 """
-setup_db.py — Crea las 4 tablas en Supabase (idempotente).
+setup_db.py — Crea todas las tablas del proyecto en Supabase (idempotente).
+
+Tablas creadas:
+  • productos_sasf          — catálogo de productos histórico de SASF
+  • ofertas_sasf            — historial completo de ofertas (desde Excel/bulk CSV)
+  • licitaciones_mercado    — todo el mercado UNSPSC 42 (bulk ChileCompra)
+  • precios_benchmark       — precios agregados por código ONU
+  • licitaciones_abiertas   — licitaciones vigentes (desde API ChileCompra)
+  • match_scores            — scores de match SASF vs licitación abierta
+  • pricing_recommendations — precios recomendados por licitación
+  • loss_diagnostics        — diagnóstico agregado de pérdidas SASF
 
 Uso:
     python scripts/setup_db.py
@@ -133,11 +143,109 @@ CREATE TABLE IF NOT EXISTS precios_benchmark (
 CREATE INDEX IF NOT EXISTS idx_benchmark_codigo ON precios_benchmark (codigo_onu);
 """
 
+SQL_LICITACIONES_ABIERTAS = """
+CREATE TABLE IF NOT EXISTS licitaciones_abiertas (
+    id                  SERIAL PRIMARY KEY,
+    codigo_licitacion   TEXT        NOT NULL,
+    nombre_licitacion   TEXT,
+    tipo                TEXT,
+    estado              TEXT,
+    fecha_publicacion   DATE,
+    fecha_cierre        DATE,
+    monto_estimado      NUMERIC(18,2),
+    nombre_organismo    TEXT,
+    rut_unidad          TEXT,
+    region              TEXT,
+    sector              TEXT,
+    n_items_total       INTEGER     DEFAULT 0,
+    n_items_unspsc42    INTEGER     DEFAULT 0,
+    items               JSONB,
+    updated_at          TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_licitaciones_abiertas UNIQUE (codigo_licitacion)
+);
+CREATE INDEX IF NOT EXISTS idx_lic_abiertas_fecha   ON licitaciones_abiertas (fecha_cierre);
+CREATE INDEX IF NOT EXISTS idx_lic_abiertas_unspsc42 ON licitaciones_abiertas (n_items_unspsc42)
+    WHERE n_items_unspsc42 > 0;
+"""
+
+SQL_MATCH_SCORES = """
+CREATE TABLE IF NOT EXISTS match_scores (
+    id                  SERIAL PRIMARY KEY,
+    codigo_licitacion   TEXT        NOT NULL,
+    rut_proveedor       TEXT        NOT NULL,
+    score_total         NUMERIC(6,2),
+    score_match         NUMERIC(6,2),
+    score_win_rate      NUMERIC(6,2),
+    score_experiencia   NUMERIC(6,2),
+    score_mercado       NUMERIC(6,2),
+    n_items_total       INTEGER,
+    n_items_match       INTEGER,
+    pct_match           NUMERIC(6,1),
+    items_match_detail  JSONB,
+    recomendacion       TEXT,
+    razon               TEXT,
+    fecha_cierre        DATE,
+    nombre_licitacion   TEXT,
+    nombre_organismo    TEXT,
+    monto_estimado      NUMERIC(18,2),
+    computed_at         TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_match_scores UNIQUE (codigo_licitacion, rut_proveedor)
+);
+CREATE INDEX IF NOT EXISTS idx_match_scores_rec ON match_scores (rut_proveedor, recomendacion);
+"""
+
+SQL_PRICING_RECOMMENDATIONS = """
+CREATE TABLE IF NOT EXISTS pricing_recommendations (
+    id                       SERIAL PRIMARY KEY,
+    codigo_licitacion        TEXT        NOT NULL,
+    rut_proveedor            TEXT        NOT NULL,
+    recomendacion_score      TEXT,
+    score_total              NUMERIC(6,2),
+    n_items_con_precio       INTEGER     DEFAULT 0,
+    n_items_sin_precio       INTEGER     DEFAULT 0,
+    monto_total_agresivo     NUMERIC(18,2),
+    monto_total_equilibrado  NUMERIC(18,2),
+    monto_total_conservador  NUMERIC(18,2),
+    estrategia_global        TEXT,
+    resumen_razon            TEXT,
+    items_pricing            JSONB,
+    nombre_licitacion        TEXT,
+    nombre_organismo         TEXT,
+    fecha_cierre             DATE,
+    monto_estimado           NUMERIC(18,2),
+    computed_at              TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_pricing_rec UNIQUE (codigo_licitacion, rut_proveedor)
+);
+CREATE INDEX IF NOT EXISTS idx_pricing_rec_score ON pricing_recommendations (rut_proveedor, recomendacion_score);
+"""
+
+SQL_LOSS_DIAGNOSTICS = """
+CREATE TABLE IF NOT EXISTS loss_diagnostics (
+    id                  SERIAL PRIMARY KEY,
+    rut_proveedor       TEXT        NOT NULL,
+    resumen_global      JSONB,
+    top_competidores    JSONB,
+    near_misses         JSONB,
+    perdidas_no_precio  JSONB,
+    chronic_losers      JSONB,
+    sweet_spots         JSONB,
+    por_organismo       JSONB,
+    por_mes             JSONB,
+    alertas             JSONB,
+    computed_at         TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_loss_diagnostics UNIQUE (rut_proveedor)
+);
+"""
+
 TABLES = [
-    ("productos_sasf",       SQL_PRODUCTOS_SASF),
-    ("ofertas_sasf",         SQL_OFERTAS_SASF),
-    ("licitaciones_mercado", SQL_LICITACIONES_MERCADO),
-    ("precios_benchmark",    SQL_PRECIOS_BENCHMARK),
+    ("productos_sasf",          SQL_PRODUCTOS_SASF),
+    ("ofertas_sasf",            SQL_OFERTAS_SASF),
+    ("licitaciones_mercado",    SQL_LICITACIONES_MERCADO),
+    ("precios_benchmark",       SQL_PRECIOS_BENCHMARK),
+    ("licitaciones_abiertas",   SQL_LICITACIONES_ABIERTAS),
+    ("match_scores",            SQL_MATCH_SCORES),
+    ("pricing_recommendations", SQL_PRICING_RECOMMENDATIONS),
+    ("loss_diagnostics",        SQL_LOSS_DIAGNOSTICS),
 ]
 
 # ---------------------------------------------------------------------------
@@ -162,7 +270,7 @@ def setup_database():
             log.info(f"  ✓ '{name}' lista")
 
     conn.close()
-    log.info("Setup completado. Las 4 tablas están listas en Supabase.")
+    log.info("Setup completado. Las 8 tablas están listas en Supabase.")
 
 
 if __name__ == "__main__":

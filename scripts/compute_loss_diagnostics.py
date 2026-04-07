@@ -26,6 +26,7 @@ import sys
 from collections import defaultdict
 from datetime import date
 from pathlib import Path
+from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 
@@ -103,7 +104,7 @@ def load_benchmark_names(supabase) -> dict:
 # Computaciones
 # ---------------------------------------------------------------------------
 
-def _safe_float(v) -> "float | None":
+def _safe_float(v) -> Optional[float]:
     try:
         return float(v) if v is not None else None
     except (ValueError, TypeError):

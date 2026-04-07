@@ -20,6 +20,7 @@ import sys
 import os
 from datetime import date
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -39,7 +40,7 @@ MESES_ES = {
 }
 
 
-def infer_date_from_filename(path: str) -> date | None:
+def infer_date_from_filename(path: str) -> Optional[date]:
     """
     Intenta inferir la fecha (mes) del nombre del archivo.
 
@@ -66,7 +67,7 @@ def infer_date_from_filename(path: str) -> date | None:
     return None
 
 
-def extract_catalog(excel_dir: str = "data/sasf_excels") -> list[dict]:
+def extract_catalog(excel_dir: str = "data/sasf_excels") -> List[Dict]:
     """Lee todos los Excel y devuelve lista de filas para productos_sasf."""
     excel_files = sorted(glob.glob(f"{excel_dir}/*.xlsx"))
     if not excel_files:
@@ -76,7 +77,7 @@ def extract_catalog(excel_dir: str = "data/sasf_excels") -> list[dict]:
     log.info(f"Archivos encontrados: {len(excel_files)}")
 
     # catalog: (codigo_onu, nombre_producto) -> {primera_vez, ultima_vez, fuente}
-    catalog: dict[tuple, dict] = {}
+    catalog: Dict[Tuple, Dict] = {}
 
     for excel_path in excel_files:
         log.info(f"  Procesando {Path(excel_path).name}...")

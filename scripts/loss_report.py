@@ -21,6 +21,7 @@ import csv
 import sys
 from datetime import date
 from pathlib import Path
+from typing import Dict, Optional
 
 from dotenv import load_dotenv
 
@@ -70,7 +71,7 @@ def _prio_icon(p: str) -> str:
 # Carga
 # ---------------------------------------------------------------------------
 
-def load_diagnostics(supabase) -> "dict | None":
+def load_diagnostics(supabase) -> Optional[Dict]:
     r = (
         supabase.table("loss_diagnostics")
         .select("*")
