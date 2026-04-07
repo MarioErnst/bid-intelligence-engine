@@ -183,8 +183,8 @@ def upsert_benchmarks(supabase, rows: list[dict]):
 
 def main():
     parser = argparse.ArgumentParser(description="Calcula benchmarks de precios por código ONU")
-    parser.add_argument("--min-obs", type=int, default=5,
-                        help="Mínimo de observaciones para incluir un código (default: 5)")
+    parser.add_argument("--min-obs", type=int, default=3,
+                        help="Mínimo de observaciones para incluir un código (default: 3)")
     args = parser.parse_args()
 
     load_dotenv()

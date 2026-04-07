@@ -36,28 +36,47 @@ COLORES = {
 
 
 def load_scores(supabase, rec_filter: str = None, dias: int = None, top: int = None) -> list[dict]:
-    """Lee match_scores con filtros opcionales."""
-    q = (
-        supabase.table("match_scores")
-        .select("*")
-        .neq("recomendacion", "SIN_MATCH")
-        .order("score_total", desc=True)
-    )
+    """
+    Lee match_scores con filtros opcionales.
+    El filtro --dias se aplica en Python para incluir registros con fecha_cierre NULL
+    (tratados como abiertos).
+    """
+    # Paginación manual para evitar límite de 1000 filas
+    rows = []
+    offset = 0
+    while True:
+        q = (
+            supabase.table("match_scores")
+            .select("*")
+            .neq("recomendacion", "SIN_MATCH")
+            .order("score_total", desc=True)
+            .range(offset, offset + 999)
+        )
+        if rec_filter:
+            q = q.eq("recomendacion", rec_filter.upper())
+        r = q.execute()
+        if not r.data:
+            break
+        rows.extend(r.data)
+        if len(r.data) < 1000:
+            break
+        offset += 1000
 
-    if rec_filter:
-        q = q.eq("recomendacion", rec_filter.upper())
-
+    # Filtro --dias en Python (maneja NULL como "abierta")
     if dias is not None:
         hoy = date.today()
         limite = (hoy + timedelta(days=dias)).isoformat()
         hoy_str = hoy.isoformat()
-        q = q.gte("fecha_cierre", hoy_str).lte("fecha_cierre", limite)
+        rows = [
+            r for r in rows
+            if not r.get("fecha_cierre")          # NULL → abierta
+            or (hoy_str <= r["fecha_cierre"] <= limite)
+        ]
 
     if top:
-        q = q.limit(top)
+        rows = rows[:top]
 
-    r = q.execute()
-    return r.data or []
+    return rows
 
 
 def format_monto(monto) -> str:

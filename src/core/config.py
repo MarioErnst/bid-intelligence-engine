@@ -16,6 +16,44 @@ UNSPSC42_MIN: int = 42_000_000
 UNSPSC42_MAX: int = 42_999_999
 
 # ---------------------------------------------------------------------------
+# Feature 1 — Match Scoring (compute_match_scores.py)
+# ---------------------------------------------------------------------------
+
+# Pesos del scoring total (deben sumar 1.0)
+W_MATCH: float       = 0.45   # cobertura del catálogo SASF
+W_WIN_RATE: float    = 0.25   # tasa de éxito histórica bayesiana
+W_EXPERIENCIA: float = 0.20   # experiencia acumulada (log-scale)
+W_MERCADO: float     = 0.10   # profundidad del mercado de benchmark
+
+# Umbrales de recomendación (sobre score 0–100)
+THRESH_ALTA: int  = 60
+THRESH_MEDIA: int = 35
+THRESH_BAJA: int  = 15
+
+# ---------------------------------------------------------------------------
+# Feature 2 — Pricing Recommendations (compute_pricing.py)
+# ---------------------------------------------------------------------------
+
+FACTOR_AGRESIVO: float    = 0.90   # p25 × 0.90 → estrategia agresiva
+FACTOR_EQUILIBRADO: float = 1.00   # p25 × 1.00 → estrategia equilibrada
+# Estrategia conservadora usa la mediana directamente
+
+GAP_UMBRAL_AGRESIVO: float    = 40.0   # % gap para recomendar agresiva
+GAP_UMBRAL_EQUILIBRADO: float = 10.0   # % gap para recomendar equilibrada
+WIN_RATE_CONSERVADOR: float   = 0.15   # win rate > 15% → conservadora
+MIN_BIDS_PARA_ESTRATEGIA: int = 3      # mínimo bids para usar gap histórico
+
+# ---------------------------------------------------------------------------
+# Feature 3 — Loss Diagnostics (compute_loss_diagnostics.py)
+# ---------------------------------------------------------------------------
+
+NEAR_MISS_THRESHOLD: float    = 10.0   # gap < 10% → casi ganó
+NO_PRECIO_THRESHOLD: float    = 0.0    # gap < 0   → SASF era más barato
+CHRONIC_MIN_BIDS: int         = 5      # mínimo bids para "chronic loser"
+SWEET_SPOT_MIN_BIDS: int      = 3      # mínimo bids para "sweet spot"
+SWEET_SPOT_MIN_WINRATE: float = 0.10   # win rate mínimo para sweet spot
+
+# ---------------------------------------------------------------------------
 # Configuración dinámica (desde .env)
 # ---------------------------------------------------------------------------
 

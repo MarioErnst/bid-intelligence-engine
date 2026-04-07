@@ -36,7 +36,13 @@ from typing import Optional
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.db.supabase_client import get_client
+from src.db.supabase_client import get_client, safe_upsert
+from src.core.config import (
+    SASF_RUT,
+    FACTOR_AGRESIVO, FACTOR_EQUILIBRADO,
+    GAP_UMBRAL_AGRESIVO, GAP_UMBRAL_EQUILIBRADO,
+    WIN_RATE_CONSERVADOR, MIN_BIDS_PARA_ESTRATEGIA,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,18 +50,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-SASF_RUT = "76930423-1"
 BATCH_SIZE = 100
-
-# Multiplicadores de precio por estrategia
-FACTOR_AGRESIVO     = 0.90   # p25 × 0.90
-FACTOR_EQUILIBRADO  = 1.00   # p25 × 1.00
-# Conservador usa la mediana directamente
-
-GAP_UMBRAL_AGRESIVO    = 40.0   # % gap para recomendar estrategia agresiva
-GAP_UMBRAL_EQUILIBRADO = 10.0   # % gap para recomendar equilibrada
-WIN_RATE_CONSERVADOR   = 0.15   # si win_rate > 15%, conservadora
-MIN_BIDS_PARA_ESTRATEGIA = 3    # mínimo bids para usar gap histórico
 
 
 # ---------------------------------------------------------------------------
@@ -501,13 +496,9 @@ def main():
 
     # 5. Upsert
     log.info(f"  {len(results)} registros — guardando en Supabase...")
-    for i in range(0, len(results), BATCH_SIZE):
-        batch = results[i: i + BATCH_SIZE]
-        supabase.table("pricing_recommendations").upsert(
-            batch,
-            on_conflict="codigo_licitacion,rut_proveedor",
-        ).execute()
-        log.info(f"  ✓ Upserted {min(i + BATCH_SIZE, len(results))}/{len(results)}")
+    safe_upsert(supabase, "pricing_recommendations", results,
+                on_conflict="codigo_licitacion,rut_proveedor",
+                batch_size=BATCH_SIZE)
 
     # 6. Resumen
     alta = [r for r in results if r["recomendacion_score"] == "ALTA"]

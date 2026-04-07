@@ -24,11 +24,10 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.db.supabase_client import get_client
+from src.core.config import SASF_RUT
 
 logging.basicConfig(level=logging.WARNING)
 log = logging.getLogger(__name__)
-
-SASF_RUT = "76930423-1"
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +117,7 @@ def load_pricing(supabase, recs: list[str], codigos: list[str] = None,
 # Impresión de una licitación
 # ---------------------------------------------------------------------------
 
-def print_licitacion(row: dict, show_all_items: bool = False):
+def print_licitacion(row: dict, show_all_items: bool = False, max_items: int = 10):
     """Imprime el detalle de pricing de una licitación."""
     codigo       = row["codigo_licitacion"]
     rec          = row.get("recomendacion_score", "?")
@@ -179,7 +178,7 @@ def print_licitacion(row: dict, show_all_items: bool = False):
         key=lambda x: float(x.get("monto_equilibrado") or 0),
         reverse=True
     )
-    mostrar = items_sorted if show_all_items else items_sorted[:10]
+    mostrar = items_sorted if show_all_items else items_sorted[:max_items]
 
     print(f"\n  {'─'*78}")
     print(f"  {'#':<3} {'PRODUCTO':<32} {'CANT':>6} {'P25':>10} {'AGRESIVO':>10} {'EQUILIB.':>10} {'GAP HIST':>9} {'AJUSTE':>8}")
@@ -207,8 +206,8 @@ def print_licitacion(row: dict, show_all_items: bool = False):
             f" {icon}"
         )
 
-    if len(items_sorted) > 10 and not show_all_items:
-        print(f"  ... y {len(items_sorted) - 10} ítems más (usa --todos para ver todos)")
+    if len(items_sorted) > max_items and not show_all_items:
+        print(f"  ... y {len(items_sorted) - max_items} ítems más (usa --todos para ver todos)")
 
     # Ítem con mayor impacto
     if items_sorted and items_sorted[0].get("ajuste_necesario_pct") is not None:
@@ -310,7 +309,9 @@ def main():
                         choices=["AGRESIVA", "EQUILIBRADA", "CONSERVADORA"],
                         help="Filtrar por estrategia global")
     parser.add_argument("--todos", action="store_true",
-                        help="Mostrar todos los ítems (sin limite de 10)")
+                        help="Mostrar todos los ítems (ignora --max-items)")
+    parser.add_argument("--max-items", type=int, default=10, dest="max_items",
+                        help="Máximo de ítems por licitación (default: 10)")
     parser.add_argument("--exportar", action="store_true",
                         help="Exportar a CSV en data/")
     args = parser.parse_args()
@@ -356,7 +357,7 @@ def main():
 
     # Detalle por licitación
     for row in rows:
-        print_licitacion(row, show_all_items=args.todos)
+        print_licitacion(row, show_all_items=args.todos, max_items=args.max_items)
 
     print("\n" + "═" * 78)
     print("  Leyenda columnas: P25=cuartil 25% mercado | AGRESIVO=p25×0.90 |")

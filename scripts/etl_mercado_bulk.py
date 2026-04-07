@@ -31,7 +31,8 @@ import polars as pl
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.db.supabase_client import get_client
+from src.db.supabase_client import get_client, safe_upsert
+from src.core.config import UNSPSC42_MIN, UNSPSC42_MAX
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,10 +53,6 @@ DEFAULT_MONTHS = [
     (2025, 9), (2025, 10), (2025, 11), (2025, 12),
     (2026, 1),
 ]
-
-# UNSPSC 42: Medical Equipment and Accessories and Supplies
-UNSPSC42_MIN = 42_000_000
-UNSPSC42_MAX = 42_999_999
 
 # Mapeo de columnas ChileCompra → schema de licitaciones_mercado
 # Columnas reales verificadas desde el CSV de enero 2025
@@ -174,6 +171,17 @@ def parse_csv(csv_bytes: bytes, year: int, month: int, first_run: bool = False) 
     if first_run:
         log.info(f"  COLUMNAS REALES DEL CSV: {df.columns}")
 
+    # Validar columnas críticas
+    CRITICAL_COLS = {"CodigoExterno", "CodigoProductoONU", "MontoUnitarioOferta"}
+    missing_critical = CRITICAL_COLS - set(df.columns)
+    if missing_critical:
+        log.error(
+            f"  ❌ Columnas críticas ausentes: {missing_critical}. "
+            f"ChileCompra pudo haber cambiado el formato del CSV. "
+            f"Columnas reales: {df.columns}"
+        )
+        return pl.DataFrame()
+
     # Filtrar solo ofertas ganadoras/seleccionadas antes de cualquier otra cosa
     # El CSV tiene una fila por oferta; solo queremos la oferta adjudicada
     if COL_OFERTA_SELECCIONADA in df.columns:
@@ -261,13 +269,10 @@ def sanitize_row(row: dict) -> dict:
 
 
 def upsert_batch(supabase, rows: list[dict]):
-    for i in range(0, len(rows), BATCH_SIZE):
-        batch = [sanitize_row(r) for r in rows[i : i + BATCH_SIZE]]
-        supabase.table("licitaciones_mercado").upsert(
-            batch,
-            on_conflict="codigo_licitacion,numero_item,mes_proceso",
-        ).execute()
-        log.info(f"    Upserted {min(i + BATCH_SIZE, len(rows))}/{len(rows)} filas")
+    clean = [sanitize_row(r) for r in rows]
+    safe_upsert(supabase, "licitaciones_mercado", clean,
+                on_conflict="codigo_licitacion,numero_item,mes_proceso",
+                batch_size=BATCH_SIZE)
 
 
 def already_loaded(supabase, mes_proceso: str) -> bool:

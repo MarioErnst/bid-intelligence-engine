@@ -31,22 +31,18 @@ from typing import Dict, List, Optional
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.db.supabase_client import get_client
+from src.db.supabase_client import get_client, safe_upsert
+from src.core.config import (
+    SASF_RUT,
+    NEAR_MISS_THRESHOLD, NO_PRECIO_THRESHOLD,
+    CHRONIC_MIN_BIDS, SWEET_SPOT_MIN_BIDS, SWEET_SPOT_MIN_WINRATE,
+)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger(__name__)
-
-SASF_RUT = "76930423-1"
-
-# Umbrales de diagnóstico
-NEAR_MISS_THRESHOLD    = 10.0   # gap < 10% → casi ganó
-NO_PRECIO_THRESHOLD    = 0.0    # gap < 0   → SASF era más barato
-CHRONIC_MIN_BIDS       = 5      # mínimo bids para "chronic loser"
-SWEET_SPOT_MIN_BIDS    = 3      # mínimo bids para "sweet spot"
-SWEET_SPOT_MIN_WINRATE = 0.10   # mínimo win rate para sweet spot
 
 
 # ---------------------------------------------------------------------------
@@ -593,10 +589,8 @@ def main():
         "alertas":          alertas,
     }
 
-    supabase.table("loss_diagnostics").upsert(
-        payload,
-        on_conflict="rut_proveedor",
-    ).execute()
+    safe_upsert(supabase, "loss_diagnostics", [payload],
+                on_conflict="rut_proveedor")
 
     log.info("✅ Diagnóstico guardado en Supabase → loss_diagnostics")
 

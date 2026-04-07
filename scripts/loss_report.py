@@ -27,8 +27,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.db.supabase_client import get_client
-
-SASF_RUT = "76930423-1"
+from src.core.config import SASF_RUT
 SECCIONES_VALIDAS = [
     "alertas", "near_misses", "no_precio", "competidores",
     "chronic", "sweet_spots", "organismos", "meses", "todas"

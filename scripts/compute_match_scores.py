@@ -24,6 +24,7 @@ Uso:
 import argparse
 import logging
 import math
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -32,7 +33,12 @@ from typing import Optional
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.db.supabase_client import get_client
+from src.db.supabase_client import get_client, safe_upsert
+from src.core.config import (
+    SASF_RUT,
+    W_MATCH, W_WIN_RATE, W_EXPERIENCIA, W_MERCADO,
+    THRESH_ALTA, THRESH_MEDIA, THRESH_BAJA,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,21 +46,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Pesos del scoring
-# ---------------------------------------------------------------------------
-
-W_MATCH       = 0.45   # cobertura del catálogo SASF
-W_WIN_RATE    = 0.25   # tasa de éxito histórica
-W_EXPERIENCIA = 0.20   # experiencia acumulada
-W_MERCADO     = 0.10   # profundidad de mercado
-
-# Thresholds de recomendación
-THRESH_ALTA  = 60
-THRESH_MEDIA = 35
-THRESH_BAJA  = 15
-
-SASF_RUT_DEFAULT = "76930423-1"
+SASF_RUT_DEFAULT = SASF_RUT   # alias para compatibilidad con --rut default
 BATCH_SIZE = 300
 
 # ---------------------------------------------------------------------------
@@ -357,16 +349,25 @@ def load_licitaciones(supabase, solo_abiertas: bool = True) -> list[dict]:
     return rows
 
 
-def score_already_exists(supabase, codigo: str) -> bool:
-    r = (
-        supabase.table("match_scores")
-        .select("id")
-        .eq("codigo_licitacion", codigo)
-        .eq("rut_proveedor", SASF_RUT_DEFAULT)
-        .limit(1)
-        .execute()
-    )
-    return bool(r.data)
+def load_existing_scores(supabase, rut: str) -> set:
+    """Carga todos los codigo_licitacion ya calculados en un set (O(1) lookup)."""
+    existing = set()
+    offset = 0
+    while True:
+        r = (
+            supabase.table("match_scores")
+            .select("codigo_licitacion")
+            .eq("rut_proveedor", rut)
+            .range(offset, offset + 999)
+            .execute()
+        )
+        if not r.data:
+            break
+        existing.update(row["codigo_licitacion"] for row in r.data)
+        if len(r.data) < 1000:
+            break
+        offset += 1000
+    return existing
 
 
 # ---------------------------------------------------------------------------
@@ -374,13 +375,9 @@ def score_already_exists(supabase, codigo: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def upsert_scores(supabase, scores: list[dict]):
-    for i in range(0, len(scores), BATCH_SIZE):
-        batch = scores[i: i + BATCH_SIZE]
-        supabase.table("match_scores").upsert(
-            batch,
-            on_conflict="codigo_licitacion,rut_proveedor",
-        ).execute()
-        log.info(f"  Upserted {min(i + BATCH_SIZE, len(scores))}/{len(scores)} scores")
+    safe_upsert(supabase, "match_scores", scores,
+                on_conflict="codigo_licitacion,rut_proveedor",
+                batch_size=BATCH_SIZE)
 
 
 # ---------------------------------------------------------------------------
@@ -439,8 +436,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="Calcula Match Scores SASF para licitaciones abiertas"
     )
-    parser.add_argument("--rut", default=SASF_RUT_DEFAULT,
-                        help=f"RUT proveedor (default: {SASF_RUT_DEFAULT})")
+    rut_env = os.getenv("PROVEEDOR_RUT", SASF_RUT_DEFAULT)
+    parser.add_argument("--rut", default=rut_env,
+                        help=f"RUT proveedor (default: env PROVEEDOR_RUT o {SASF_RUT_DEFAULT})")
     parser.add_argument("--todos", action="store_true",
                         help="Incluir licitaciones ya cerradas")
     parser.add_argument("--force", action="store_true",
@@ -467,11 +465,16 @@ def main():
     scores = []
     skipped = 0
 
+    # Cargar existentes en un set (1 query en lugar de N+1)
+    existing = set() if args.force else load_existing_scores(supabase, args.rut)
+    if existing:
+        log.info(f"  {len(existing)} scores ya existentes en DB")
+
     for lic in licitaciones:
         codigo = lic.get("codigo_licitacion")
         if not codigo:
             continue
-        if not args.force and score_already_exists(supabase, codigo):
+        if not args.force and codigo in existing:
             skipped += 1
             continue
 

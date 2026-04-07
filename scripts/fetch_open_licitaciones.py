@@ -27,7 +27,8 @@ import requests
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.db.supabase_client import get_client
+from src.db.supabase_client import get_client, safe_upsert
+from src.core.config import UNSPSC42_MIN, UNSPSC42_MAX
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,8 +41,6 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 BASE_URL = "https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json"
-UNSPSC42_MIN = 42_000_000
-UNSPSC42_MAX = 42_999_999
 BATCH_SIZE = 200
 DEFAULT_PAGES = 3        # 3000 licitaciones en primera corrida
 DEFAULT_DELAY = 0.35     # segundos entre llamadas a la API
@@ -177,13 +176,9 @@ def parse_licitacion_detail(raw: dict) -> Optional[dict]:
 
 def upsert_batch(supabase, rows: list[dict]):
     """Upserta en licitaciones_abiertas."""
-    for i in range(0, len(rows), BATCH_SIZE):
-        batch = rows[i: i + BATCH_SIZE]
-        supabase.table("licitaciones_abiertas").upsert(
-            batch,
-            on_conflict="codigo_licitacion",
-        ).execute()
-        log.info(f"  ✓ Upserted {min(i + BATCH_SIZE, len(rows))}/{len(rows)} licitaciones")
+    safe_upsert(supabase, "licitaciones_abiertas", rows,
+                on_conflict="codigo_licitacion",
+                batch_size=BATCH_SIZE)
 
 
 def already_fetched_today(supabase, codigo: str) -> bool:

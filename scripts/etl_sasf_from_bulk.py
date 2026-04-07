@@ -28,7 +28,8 @@ import polars as pl
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.db.supabase_client import get_client
+from src.db.supabase_client import get_client, safe_upsert
+from src.core.config import SASF_RUT, UNSPSC42_MIN, UNSPSC42_MAX
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,10 +50,8 @@ DEFAULT_MONTHS = [
     (2026, 1),
 ]
 
-SASF_RUT_DEFAULT = "76.930.423-1"
-
-UNSPSC42_MIN = 42_000_000
-UNSPSC42_MAX = 42_999_999
+# RUT ya normalizado (sin puntos) — también puede venir de env PROVEEDOR_RUT
+SASF_RUT_DEFAULT = os.getenv("PROVEEDOR_RUT", SASF_RUT)
 
 CACHE_DIR = Path("data/cache")
 BATCH_SIZE = 500
@@ -157,6 +156,17 @@ def process_csv(
 
     if first_run:
         log.info(f"  COLUMNAS CSV: {df.columns}")
+
+    # Validar columnas críticas
+    CRITICAL_COLS = {"CodigoExterno", "RutProveedor", "CodigoProductoONU", "MontoUnitarioOferta"}
+    missing_critical = CRITICAL_COLS - set(df.columns)
+    if missing_critical:
+        log.error(
+            f"  ❌ Columnas críticas ausentes: {missing_critical}. "
+            f"ChileCompra pudo haber cambiado el formato del CSV. "
+            f"Columnas reales: {df.columns}"
+        )
+        return pl.DataFrame()
 
     # ── Normalizar RUT proveedor para comparación ──────────────────────────
     if "RutProveedor" not in df.columns:
@@ -303,13 +313,10 @@ def sanitize_row(row: dict) -> dict:
 
 
 def upsert_batch(supabase, rows: list[dict]):
-    for i in range(0, len(rows), BATCH_SIZE):
-        batch = [sanitize_row(r) for r in rows[i: i + BATCH_SIZE]]
-        supabase.table("ofertas_sasf").upsert(
-            batch,
-            on_conflict="id_licitacion,codigo_onu,fecha_adjudicacion",
-        ).execute()
-        log.info(f"    Upserted {min(i + BATCH_SIZE, len(rows))}/{len(rows)}")
+    clean = [sanitize_row(r) for r in rows]
+    safe_upsert(supabase, "ofertas_sasf", clean,
+                on_conflict="id_licitacion,codigo_onu,fecha_adjudicacion",
+                batch_size=BATCH_SIZE)
 
 
 def already_loaded(supabase, mes_proceso: str) -> bool:
