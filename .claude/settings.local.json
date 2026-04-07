@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p /Users/marioernsteccher/Desktop/Licitaciones-pro/scripts)",
+      "Bash(mkdir -p /Users/marioernsteccher/Desktop/Licitaciones-pro/data/sasf_excels)",
+      "Bash(mkdir -p /Users/marioernsteccher/Desktop/Licitaciones-pro/src/db)",
+      "Bash(touch /Users/marioernsteccher/Desktop/Licitaciones-pro/scripts/__init__.py)",
+      "Bash(touch /Users/marioernsteccher/Desktop/Licitaciones-pro/src/db/__init__.py)"
+    ]
+  }
+}

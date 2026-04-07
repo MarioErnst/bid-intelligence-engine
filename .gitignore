@@ -1,0 +1,51 @@
+# ── Entorno y secretos ──────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# ── Python ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# ── Datos sensibles y voluminosos ───────────────────────────────────
+data/cache/
+data/sasf_excels/
+*.xlsx
+*.xls
+data/step*.json
+pdf_reports/
+data/*.csv
+data/match_report_*.csv
+data/pricing_report_*.csv
+data/near_misses_*.csv
+data/chronic_losers_*.csv
+data/sweet_spots_*.csv
+
+# ── Gráficos y artefactos generados ─────────────────────────────────
+graficos/
+
+# ── IDE y sistema ────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Logs ─────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Reportes de auditoría (contienen datos internos) ─────────────────
+Reporte_Final_Auditoria.*
