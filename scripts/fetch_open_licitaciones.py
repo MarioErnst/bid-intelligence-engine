@@ -46,6 +46,7 @@ BASE_URL = "https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json
 BATCH_SIZE = 200
 DEFAULT_PAGES = 3        # 3000 licitaciones en primera corrida
 DEFAULT_DELAY = 0.35     # segundos entre llamadas a la API
+ESTADO_API = "activas"   # "activas" incluye publicadas + en evaluación con plazo abierto
 
 # Palabras clave para pre-filtrar por nombre de licitación (rubro médico/salud)
 # Permite un primer filtrado rápido sin llamar el endpoint de detalle.
@@ -65,33 +66,52 @@ KEYWORDS_SALUD = [
 # ---------------------------------------------------------------------------
 
 def _get(session: requests.Session, params: dict, ticket: str,
-         retries: int = 4, delay: float = DEFAULT_DELAY) -> Optional[dict]:
-    """GET a la API de ChileCompra con reintentos exponenciales."""
+         retries: int = 15, delay: float = DEFAULT_DELAY) -> Optional[dict]:
+    """
+    GET a la API de ChileCompra con retry inteligente.
+
+    La API devuelve HTTP 500 intermitente aunque esté disponible — se resuelve
+    reintentando rápido (1s). Solo hace backoff en error 10500 (throttle real).
+    """
     params["ticket"] = ticket
     for attempt in range(1, retries + 1):
         try:
-            r = session.get(BASE_URL, params=params, timeout=30)
+            r = session.get(BASE_URL, params=params, timeout=45)
+
+            # 500 intermitente: reintentar rápido sin backoff
+            if r.status_code == 500:
+                log.debug(f"  HTTP 500 (intento {attempt}/{retries}), reintentando en 1s...")
+                time.sleep(1)
+                continue
+
             r.raise_for_status()
             data = r.json()
+
+            # Código 10500 = throttle real de la API
             if isinstance(data, dict) and data.get("Codigo") == 10500:
-                wait = min(delay * (2 ** attempt), 60)
-                log.warning(f"  API saturada (10500). Esperando {wait:.1f}s...")
+                wait = min(2 * attempt, 30)
+                log.warning(f"  API throttle (10500). Esperando {wait}s...")
                 time.sleep(wait)
                 continue
+
             return data
+
+        except requests.exceptions.Timeout:
+            log.warning(f"  Timeout (intento {attempt}/{retries}), reintentando...")
+            time.sleep(2)
+            continue
         except Exception as e:
             if attempt == retries:
                 log.error(f"  ❌ Fallo tras {retries} intentos: {e}")
                 return None
-            wait = delay * (2 ** (attempt - 1))
-            log.debug(f"  Reintento {attempt}/{retries} en {wait:.1f}s: {e}")
-            time.sleep(wait)
+            time.sleep(1)
+    log.error(f"  ❌ Agotados {retries} reintentos")
     return None
 
 
 def fetch_page(session, ticket: str, page: int) -> Optional[dict]:
-    """Trae una página del listado de licitaciones publicadas."""
-    return _get(session, {"estado": "publicada", "pagina": page}, ticket)
+    """Trae una página del listado de licitaciones activas."""
+    return _get(session, {"estado": ESTADO_API, "pagina": page}, ticket)
 
 
 def fetch_detail(session, ticket: str, codigo: str) -> Optional[dict]:
