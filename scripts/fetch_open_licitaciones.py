@@ -66,46 +66,52 @@ KEYWORDS_SALUD = [
 # ---------------------------------------------------------------------------
 
 def _get(session: requests.Session, params: dict, ticket: str,
-         retries: int = 15, delay: float = DEFAULT_DELAY) -> Optional[dict]:
+         retries: int = 30, delay: float = DEFAULT_DELAY) -> Optional[dict]:
     """
-    GET a la API de ChileCompra con retry inteligente.
+    GET a la API de ChileCompra con retry sin espera para 10500.
 
-    La API devuelve HTTP 500 intermitente aunque esté disponible — se resuelve
-    reintentando rápido (1s). Solo hace backoff en error 10500 (throttle real).
+    La API devuelve HTTP 500 con body {"Codigo": 10500, "Mensaje": "peticiones
+    simultáneas"} cuando está ocupada. La solución es reintentar INMEDIATAMENTE
+    sin esperar — el servidor acepta la request cuando queda libre (igual que
+    hacer F5 rápido en el navegador).
     """
     params["ticket"] = ticket
     for attempt in range(1, retries + 1):
         try:
             r = session.get(BASE_URL, params=params, timeout=45)
 
-            # 500 intermitente: reintentar rápido sin backoff
-            if r.status_code == 500:
-                log.debug(f"  HTTP 500 (intento {attempt}/{retries}), reintentando en 1s...")
-                time.sleep(1)
-                continue
+            # Leer JSON aunque sea 500 — puede traer Codigo=10500
+            try:
+                data = r.json()
+            except Exception:
+                data = None
+
+            # 10500 = servidor ocupado con otra request del mismo ticket.
+            # Reintentar SIN espera, igual que F5 rápido.
+            if (r.status_code == 500 or
+                    (isinstance(data, dict) and data.get("Codigo") == 10500)):
+                if attempt % 5 == 0:
+                    log.debug(f"  API ocupada (10500) — intento {attempt}/{retries}...")
+                continue  # sin sleep
 
             r.raise_for_status()
-            data = r.json()
 
-            # Código 10500 = throttle real de la API
-            if isinstance(data, dict) and data.get("Codigo") == 10500:
-                wait = min(2 * attempt, 30)
-                log.warning(f"  API throttle (10500). Esperando {wait}s...")
-                time.sleep(wait)
-                continue
-
+            if data is None:
+                return None
             return data
 
         except requests.exceptions.Timeout:
             log.warning(f"  Timeout (intento {attempt}/{retries}), reintentando...")
+            # Pequeña pausa solo en timeout real
             time.sleep(2)
             continue
+        except requests.exceptions.HTTPError:
+            raise
         except Exception as e:
             if attempt == retries:
                 log.error(f"  ❌ Fallo tras {retries} intentos: {e}")
                 return None
-            time.sleep(1)
-    log.error(f"  ❌ Agotados {retries} reintentos")
+    log.error(f"  ❌ Agotados {retries} reintentos sin respuesta válida")
     return None
 
 
@@ -138,6 +144,26 @@ def parse_date(s: Optional[str]) -> Optional[str]:
         except ValueError:
             continue
     return None
+
+
+def parse_licitacion_listado(lic: dict) -> dict:
+    """
+    Parsea una entrada del LISTADO (sin llamar detalle).
+    Solo tiene: CodigoExterno, Nombre, FechaCierre. Sin items ni ONU codes.
+    Útil para el modo --fast: guarda todas las licitaciones rápido.
+    """
+    fecha = lic.get("FechaCierre") or ""
+    # FechaCierre en listado viene ISO: "2026-04-09T15:00:00"
+    fecha_iso = parse_date(fecha)
+    return {
+        "codigo_licitacion": lic.get("CodigoExterno"),
+        "nombre_licitacion": (lic.get("Nombre") or "")[:500],
+        "fecha_cierre":      fecha_iso,
+        "n_items_total":     0,
+        "n_items_unspsc42":  0,
+        "items":             [],
+        "updated_at":        datetime.utcnow().isoformat(),
+    }
 
 
 def parse_licitacion_detail(raw: dict) -> Optional[dict]:
@@ -248,6 +274,11 @@ def main():
     parser.add_argument("--keywords", action="store_true",
                         help="Pre-filtra por nombre antes de llamar detalle (mucho más rápido, "
                              "puede perder licitaciones con nombres poco descriptivos)")
+    parser.add_argument("--fast", action="store_true",
+                        help="Modo rápido: guarda todas las licitaciones del listado SIN llamar "
+                             "detalle (sin items ni ONU codes). ~30s total. "
+                             "Útil para tener fecha_cierre rápido; después correr sin --fast "
+                             "solo para las que el scoring marque como relevantes.")
     args = parser.parse_args()
 
     load_dotenv()
@@ -285,6 +316,26 @@ def main():
         log.info(f"  {len(listado)} licitaciones en página {page}")
         skipped = 0
 
+        # --- Modo FAST: guardar listado completo sin llamar detalle ---
+        if args.fast:
+            for lic in listado:
+                codigo = lic.get("CodigoExterno")
+                if not codigo:
+                    continue
+                total_fetched += 1
+                # Filtro keywords si aplica
+                if args.keywords:
+                    nombre_lower = (lic.get("Nombre") or "").lower()
+                    if not any(kw in nombre_lower for kw in KEYWORDS_SALUD):
+                        continue
+                batch.append(parse_licitacion_listado(lic))
+                if len(batch) >= BATCH_SIZE:
+                    upsert_batch(supabase, batch)
+                    total_saved += len(batch)
+                    batch = []
+            continue  # siguiente página
+
+        # --- Modo NORMAL: llamar detalle para obtener items y ONU codes ---
         for lic in listado:
             codigo = lic.get("CodigoExterno")
             if not codigo:
@@ -336,7 +387,14 @@ def main():
     log.info(f"\n=== Fetch finalizado ===")
     log.info(f"  Licitaciones revisadas : {total_fetched}")
     log.info(f"  Guardadas en Supabase  : {total_saved}")
-    log.info(f"\n→ Siguiente paso: python3 scripts/compute_match_scores.py")
+
+    if args.fast:
+        log.info(f"\n  Modo --fast: licitaciones guardadas SIN ítems (sin ONU codes).")
+        log.info(f"  Para scoring real, re-fetch con detalle de licitaciones específicas:")
+        log.info(f"  → python3 scripts/fetch_open_licitaciones.py --keywords --force")
+        log.info(f"    (tarda ~30s/licitación por la API de ChileCompra)")
+    else:
+        log.info(f"\n→ Siguiente paso: python3 scripts/compute_match_scores.py")
 
 
 if __name__ == "__main__":
